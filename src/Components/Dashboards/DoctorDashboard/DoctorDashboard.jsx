@@ -1,175 +1,134 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Card,
-  Statistic,
-  Row,
-  Col,
-  Table,
-  Typography,
-  Form,
-  Input,
-  Select,
   Button,
-  Divider,
+  Typography,
+  Modal,
+  Form,
   DatePicker,
   TimePicker,
+  Input,
+  Table,
   message,
 } from 'antd';
 import moment from 'moment';
 
 const { Title } = Typography;
-const { Option } = Select;
 const { RangePicker } = TimePicker;
 
+// Static hospital data
 const sampleHospitals = [
-  { id: 1, name: 'Sunshine Hospital', departments: ['Cardiology', 'Neurology'] },
+  { id: 1, name: 'Sunshine Hospital', departments: ['Cardio', 'Neuro'] },
   { id: 2, name: 'Apollo Hospitals', departments: ['Orthopedics', 'Dermatology'] },
   { id: 3, name: 'KIMS Hospital', departments: ['Cardiology', 'Pediatrics'] },
 ];
 
-// Utility to fetch from localStorage
+// Get slots from local storage
 const getStoredSlots = () => {
-  return JSON.parse(localStorage.getItem('doctorTimeSlots')) || [];
+  const data = JSON.parse(localStorage.getItem('doctorTimeSlots')) || [];
+  return data.map(slot => ({
+    ...slot,
+    startTime: moment(slot.startTime),
+    endTime: moment(slot.endTime),
+  }));
 };
 
+// Save slots to localStorage
 const saveSlotsToStorage = (slots) => {
-  localStorage.setItem('doctorTimeSlots', JSON.stringify(slots));
+  const serialized = slots.map(slot => ({
+    ...slot,
+    startTime: slot.startTime.toISOString(),
+    endTime: slot.endTime.toISOString(),
+  }));
+  localStorage.setItem('doctorTimeSlots', JSON.stringify(serialized));
 };
 
 const DoctorDashboard = () => {
   const [doctor, setDoctor] = useState(null);
-  const [form] = Form.useForm();
-  const [associatedHospitals, setAssociatedHospitals] = useState([]);
+  const [hospitals] = useState(sampleHospitals);
   const [timeSlots, setTimeSlots] = useState([]);
-  const [consultationFees, setConsultationFees] = useState({});
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedHospital, setSelectedHospital] = useState(null);
+  const [form] = Form.useForm();
   const [messageApi, contextHolder] = message.useMessage();
 
-  // Load previous slots
+  // Get doctor info from sessionStorage
   useEffect(() => {
-    const stored = getStoredSlots();
-    setTimeSlots(stored);
+    const loggedInDoctor = JSON.parse(sessionStorage.getItem('loggedInDoctor'));
+    if (loggedInDoctor?.username) {
+      setDoctor(loggedInDoctor);
+    }
   }, []);
 
-  const eligibleHospitals = useMemo(() => {
-    if (!doctor) return [];
-    return sampleHospitals.filter(hospital =>
-      hospital.departments.some(dep => doctor.specializations.includes(dep))
+  // Load time slots from localStorage
+  useEffect(() => {
+    setTimeSlots(getStoredSlots());
+  }, []);
+
+  // Open add slot modal
+  const openModal = (hospital) => {
+    setSelectedHospital(hospital);
+    setModalVisible(true);
+  };
+
+  // Check for overlapping slot for the same doctor (across hospitals)
+  const isOverlapping = (date, start, end) => {
+    return timeSlots.some(slot =>
+      slot.date === date &&
+      slot.doctorUsername === doctor.username &&
+      start.isBefore(slot.endTime) &&
+      end.isAfter(slot.startTime)
     );
-  }, [doctor]);
-
-  const handleRegister = (values) => {
-    setDoctor(values);
-    messageApi.success('Doctor Registered');
   };
 
-  const handleFeeChange = (hospitalId, value) => {
-    setConsultationFees(prev => ({ ...prev, [hospitalId]: Number(value) }));
-  };
-
-  const handleAssociate = (hospitalId) => {
-    const hospital = sampleHospitals.find(h => h.id === hospitalId);
-    if (!hospital) return;
-
-    const already = associatedHospitals.some(h => h.id === hospitalId);
-    if (already) return messageApi.warning('Already associated');
-
-    const fee = consultationFees[hospitalId];
-    if (!fee || fee <= 0) {
-      return messageApi.error('Enter a valid consultation fee');
+  // Handle form submit
+  const handleAddSlot = (values) => {
+    const { date, time, fee } = values;
+    if (!date || !time || time.length !== 2) {
+      return messageApi.error('Please select a valid date and time range.');
     }
 
-    setAssociatedHospitals(prev => [...prev, { ...hospital, fee }]);
-    messageApi.success(`Associated with ${hospital.name}`);
-  };
-
-  // Check for time conflict
-  const isOverlapping = (date, start, end) => {
-    return timeSlots.some(slot => {
-      return (
-        slot.date === date &&
-        moment(start).isBefore(moment(slot.endTime)) &&
-        moment(end).isAfter(moment(slot.startTime))
-      );
-    });
-  };
-
-  const handleTimeSlotAdd = (hospitalId, date, timeRange) => {
-    const hospital = associatedHospitals.find(h => h.id === hospitalId);
-    if (!hospital) return;
-
-    const fee = hospital.fee;
+    const [startRaw, endRaw] = time;
+    const start = moment(date).hour(startRaw.hour()).minute(startRaw.minute()).second(0);
+    const end = moment(date).hour(endRaw.hour()).minute(endRaw.minute()).second(0);
     const dateStr = date.format('YYYY-MM-DD');
-    const [start, end] = timeRange;
 
-    if (start.isSameOrAfter(end)) {
-      return messageApi.error('Start time should be before end time');
+    if (!start.isValid() || !end.isValid() || start.isSameOrAfter(end)) {
+      return messageApi.error('Invalid time range.');
     }
 
     if (isOverlapping(dateStr, start, end)) {
-      return messageApi.error('Slot overlaps with an existing time');
+      return messageApi.warning("You're already scheduled during this time.");
     }
 
     const newSlot = {
-      hospitalId,
-      hospital: hospital.name,
+      doctorUsername: doctor.username,
+      hospitalId: selectedHospital.id,
+      hospital: selectedHospital.name,
       date: dateStr,
       startTime: start,
       endTime: end,
-      fee,
+      fee: Number(fee),
     };
 
-    const updated = [...timeSlots, newSlot];
-    setTimeSlots(updated);
-    saveSlotsToStorage(updated);
-    messageApi.success('Time slot added!');
+    const updatedSlots = [...timeSlots, newSlot];
+    setTimeSlots(updatedSlots);
+    saveSlotsToStorage(updatedSlots);
+
+    messageApi.success('Slot added successfully!');
+    form.resetFields();
+    setModalVisible(false);
   };
 
-  const consultations = useMemo(() => {
-    const map = {};
-    timeSlots.forEach(slot => {
-      const fee = Number(slot.fee);
-      if (!map[slot.hospital]) {
-        map[slot.hospital] = {
-          hospital: slot.hospital,
-          consultations: 0,
-          totalFee: 0,
-          doctorEarnings: 0,
-          hospitalEarnings: 0
-        };
-      }
-      map[slot.hospital].consultations++;
-      map[slot.hospital].totalFee += fee;
-      map[slot.hospital].doctorEarnings += fee * 0.6;
-      map[slot.hospital].hospitalEarnings += fee * 0.4;
-    });
-    return Object.values(map);
-  }, [timeSlots]);
-
-  const totals = {
-    totalConsultations: consultations.reduce((a, b) => a + b.consultations, 0),
-    totalFee: consultations.reduce((a, b) => a + b.totalFee, 0),
-    doctorEarnings: consultations.reduce((a, b) => a + b.doctorEarnings, 0),
-    hospitalEarnings: consultations.reduce((a, b) => a + b.hospitalEarnings, 0),
-  };
-
+  // Table columns
   const columns = [
     { title: 'Hospital', dataIndex: 'hospital' },
-    { title: 'Consultations', dataIndex: 'consultations' },
+    { title: 'Date', dataIndex: 'date' },
     {
-      title: 'Total Fee',
-      dataIndex: 'totalFee',
-      render: (val) => `₹${val.toFixed(2)}`
+      title: 'Time',
+      render: (row) => `${row.startTime.format('HH:mm')} - ${row.endTime.format('HH:mm')}`,
     },
-    {
-      title: 'Doctor Earnings (60%)',
-      dataIndex: 'doctorEarnings',
-      render: (val) => `₹${val.toFixed(2)}`
-    },
-    {
-      title: 'Hospital Share (40%)',
-      dataIndex: 'hospitalEarnings',
-      render: (val) => `₹${val.toFixed(2)}`
-    },
+    { title: 'Fee (₹)', dataIndex: 'fee' },
   ];
 
   return (
@@ -177,113 +136,73 @@ const DoctorDashboard = () => {
       {contextHolder}
       <Title level={3}>Doctor Dashboard</Title>
 
-      {!doctor && (
-        <>
-          <Title level={4}>Doctor Registration</Title>
-          <Form layout="vertical" form={form} onFinish={handleRegister} style={{ maxWidth: 600 }}>
-            <Form.Item name="name" label="Full Name" rules={[{ required: true }]}>
-              <Input />
-            </Form.Item>
-            <Form.Item name="qualifications" label="Qualifications" rules={[{ required: true }]}>
-              <Select placeholder="Select">
-                <Option value="MBBS">MBBS</Option>
-                <Option value="MD">MD</Option>
-                <Option value="BDS">BDS</Option>
-              </Select>
-            </Form.Item>
-            <Form.Item name="specializations" label="Specializations" rules={[{ required: true }]}>
-              <Select mode="multiple">
-                <Option value="Cardiology">Cardiology</Option>
-                <Option value="Neurology">Neurology</Option>
-                <Option value="Orthopedics">Orthopedics</Option>
-                <Option value="Dermatology">Dermatology</Option>
-                <Option value="Pediatrics">Pediatrics</Option>
-              </Select>
-            </Form.Item>
-            <Form.Item name="experience" label="Experience (Years)" rules={[{ required: true }]}>
-              <Input type="number" min={0} />
-            </Form.Item>
-            <Button type="primary" htmlType="submit">Register</Button>
-          </Form>
-        </>
-      )}
-
+      {/* Doctor Info Card */}
       {doctor && (
-        <>
-          <Card style={{ marginBottom: 20 }}>
-            <Title level={4}>Welcome Dr. {doctor.name}</Title>
-            <p><strong>Qualification:</strong> {doctor.qualifications}</p>
-            <p><strong>Experience:</strong> {doctor.experience} years</p>
-            <p><strong>Specialization(s):</strong> {doctor.specializations.join(', ')}</p>
-          </Card>
-
-          <Divider />
-          <Title level={4}>Associate with Hospitals</Title>
-          {eligibleHospitals.map(hospital => (
-            <Card key={hospital.id} style={{ marginBottom: 16 }}>
-              <p><strong>{hospital.name}</strong></p>
-              <p>Departments: {hospital.departments.join(', ')}</p>
-              <Input
-                placeholder="Consultation Fee (₹)"
-                type="number"
-                min={0}
-                style={{ width: 160, marginRight: 10 }}
-                onChange={(e) => handleFeeChange(hospital.id, e.target.value)}
-              />
-              <Button type="primary" onClick={() => handleAssociate(hospital.id)}>
-                Associate
-              </Button>
-            </Card>
-          ))}
-
-          <Divider />
-          <Title level={4}>Add Time Slots</Title>
-          {associatedHospitals.map(h => (
-            <Card key={h.id} title={h.name} style={{ marginBottom: 24 }}>
-              <Form
-                layout="inline"
-                onFinish={v => handleTimeSlotAdd(h.id, v.date, v.time)}
-              >
-                <Form.Item name="date" rules={[{ required: true }]}>
-                  <DatePicker />
-                </Form.Item>
-                <Form.Item name="time" rules={[{ required: true }]}>
-                  <RangePicker format="HH:mm" />
-                </Form.Item>
-                <Form.Item>
-                  <Button type="primary" htmlType="submit">Add Slot</Button>
-                </Form.Item>
-              </Form>
-
-              <ul style={{ marginTop: 10 }}>
-                {timeSlots
-                  .filter(slot => slot.hospitalId === h.id)
-                  .map((s, idx) => (
-                    <li key={idx}>
-                      {s.date} | {s.startTime.format('HH:mm')} - {s.endTime.format('HH:mm')} | ₹{s.fee}
-                    </li>
-                  ))}
-              </ul>
-            </Card>
-          ))}
-
-          {consultations.length > 0 && (
-            <>
-              <Divider />
-              <Title level={4}>Earnings Summary</Title>
-              <Row gutter={16} style={{ marginBottom: 24 }}>
-                <Col span={6}><Card><Statistic title="Total Consultations" value={totals.totalConsultations} /></Card></Col>
-                <Col span={6}><Card><Statistic title="Total Fee" prefix="₹" value={totals.totalFee.toFixed(2)} /></Card></Col>
-                <Col span={6}><Card><Statistic title="Doctor Earnings" prefix="₹" value={totals.doctorEarnings.toFixed(2)} /></Card></Col>
-                <Col span={6}><Card><Statistic title="Hospital Share" prefix="₹" value={totals.hospitalEarnings.toFixed(2)} /></Card></Col>
-              </Row>
-
-              <Title level={5}>Earnings by Hospital</Title>
-              <Table columns={columns} dataSource={consultations} pagination={false} bordered />
-            </>
-          )}
-        </>
+        <Card style={{ marginBottom: 24 }}>
+          <Title level={4}>Doctor Info</Title>
+          <p><strong>Name:</strong> Dr. {doctor.username}</p>
+          <p><strong>Qualification:</strong> {doctor.qualification}</p>
+          <p><strong>Experience:</strong> {doctor.experience} years</p>
+          <p><strong>Specializations:</strong> {doctor.specializations?.join(', ') || 'N/A'}</p>
+        </Card>
       )}
+
+      {/* Hospital Cards */}
+      <Title level={4}>Hospitals</Title>
+      {hospitals.map(hospital => (
+        <Card key={hospital.id} style={{ marginBottom: 16 }}>
+          <p><strong>{hospital.name}</strong></p>
+          <p>Departments: {hospital.departments.join(', ')}</p>
+          <Button type="primary" onClick={() => openModal(hospital)}>
+            Manage Schedule
+          </Button>
+        </Card>
+      ))}
+
+      {/* Time Slot Table */}
+      <Title level={4}>Your Time Slots</Title>
+      <Table
+        columns={columns}
+        dataSource={timeSlots.filter(slot => slot.doctorUsername === doctor?.username)}
+        rowKey={(record, index) => index}
+        bordered
+      />
+
+      {/* Modal to Add Slots */}
+      <Modal
+        open={modalVisible}
+        title={`Manage Schedule - ${selectedHospital?.name}`}
+        onCancel={() => setModalVisible(false)}
+        onOk={() => form.submit()}
+        okText="Add Slot"
+      >
+        <Form layout="vertical" form={form} onFinish={handleAddSlot}>
+          <Form.Item
+            name="fee"
+            label="Consultation Fee (₹)"
+            rules={[{ required: true, message: 'Enter consultation fee' }]}
+          >
+            <Input type="number" min={0} />
+          </Form.Item>
+          <Form.Item
+            name="date"
+            label="Select Date"
+            rules={[{ required: true, message: 'Select date' }]}
+          >
+            <DatePicker
+              style={{ width: '100%' }}
+              disabledDate={current => current && current < moment().startOf('day')}
+            />
+          </Form.Item>
+          <Form.Item
+            name="time"
+            label="Time Range"
+            rules={[{ required: true, message: 'Select time range' }]}
+          >
+            <RangePicker format="HH:mm" style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 };
